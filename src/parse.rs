@@ -186,7 +186,8 @@ fn tokenize(source: &str) -> Result<Vec<Token<'_>>, ParseError> {
     Ok(tokens)
 }
 
-fn bare(s: &str) -> bool {
+// Starter classification only; the lexer has already excluded token delimiters.
+pub(crate) fn bare(s: &str) -> bool {
     let b = s.as_bytes();
     match b.first() {
         None | Some(b'+') => false,

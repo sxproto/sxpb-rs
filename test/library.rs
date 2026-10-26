@@ -42,6 +42,116 @@ fn message_order_and_dict_kind() {
 }
 
 #[test]
+fn canonical_simple_message_output() {
+    for source in [
+        "(\"quoted name\" value)",
+        "(answer 42)\n(enabled +true)\n(label paprika)",
+    ] {
+        assert_eq!(to_string(&roundtrip(source)).unwrap(), source);
+    }
+}
+
+#[test]
+fn document_items_use_lines_and_nested_bodies_stay_compact() {
+    for (source, expected) in [
+        (
+            "(first 1) (second (x 2) (y 3))",
+            "(first 1)\n(second (x 2) (y 3))",
+        ),
+        ("() (first 1) (second 2)", "()\n(first 1)\n(second 2)"),
+        ("(()) 1 2", "(())\n1\n2"),
+        ("(()) (x 1) 2", "(())\n(x 1)\n2"),
+        ("(\"\") leaf twig", "(\"\")\nleaf\ntwig"),
+    ] {
+        assert_eq!(to_string(&roundtrip(source)).unwrap(), expected);
+        assert!(!expected.ends_with('\n'));
+    }
+}
+
+#[test]
+fn unambiguous_string_atoms_and_names_print_bare() {
+    for text in [
+        "word",
+        "-",
+        ".",
+        "/",
+        "--",
+        "..",
+        "-name",
+        ".name",
+        "é",
+        "日本語",
+        "back\\slash",
+    ] {
+        let value: Value = Mesg::from(vec![Field::new(text, text)]).into();
+        let printed = to_string(&value).unwrap();
+        assert_eq!(printed, format!("({text} {text})"));
+        assert_eq!(parse(&printed), value);
+        assert_eq!(to_string(&parse(&printed)).unwrap(), printed);
+    }
+}
+
+#[test]
+fn ambiguous_or_delimited_string_atoms_and_names_remain_quoted() {
+    for text in [
+        "",
+        "+",
+        "+.",
+        "-1",
+        ".5",
+        "-.",
+        ".+",
+        "+true",
+        "+false",
+        "50mm",
+        "1e2",
+        "-0.0",
+        "two words",
+        " leading",
+        "trailing ",
+        "two  spaces",
+        "x(y)",
+        "x;y",
+        "x\"y",
+        "x\ny",
+        "x\ty",
+        "x\ry",
+        "\0",
+        "\u{8}",
+        "\u{7f}",
+        "\u{85}",
+        "\u{2028}",
+        "\u{2029}",
+        "\u{feff}x",
+        "x\u{feff}y",
+    ] {
+        let value = message(Value::from(text));
+        let printed = to_string(&value).unwrap();
+        assert!(printed.starts_with("(a \""), "{text:?}: {printed:?}");
+        assert_eq!(parse(&printed), value, "{text:?}");
+        assert_eq!(to_string(&parse(&printed)).unwrap(), printed);
+        if !text.is_empty() {
+            let named: Value = Mesg::from(vec![Field::new(text, 1)]).into();
+            let printed = to_string(&named).unwrap();
+            assert!(printed.starts_with("(\""), "{text:?}: {printed:?}");
+            assert_eq!(parse(&printed), named);
+        }
+    }
+}
+
+#[test]
+fn canonical_empty_nest_items_preserve_discriminators() {
+    assert_eq!(
+        to_string(&roundtrip("(\"\") \"\"")).unwrap(),
+        "(\"\")\n\"\""
+    );
+    assert_eq!(
+        to_string(&roundtrip("(\"\") (\"\" (\"\"))")).unwrap(),
+        "(\"\")\n(\"\" (\"\"))"
+    );
+}
+
+#[test]
 fn standalone_container_types_move_without_allocating_and_expose_typed_access() {
     macro_rules! check_sequence {
         ($ty:ident, $first:expr, $second:expr, $get:ident, $get_mut:ident) => {{

@@ -5,6 +5,15 @@ use crate::{Field, MAX_DEPTH, ManyofEntry, NestItem, SerializeError, Value};
 
 type Result<T> = std::result::Result<T, SerializeError>;
 
+fn bare_atom(text: &str) -> bool {
+    crate::parse::bare(text)
+        && !text.chars().any(|ch| {
+            ch.is_whitespace()
+                || ch.is_control()
+                || matches!(ch, '(' | ')' | ';' | '"' | '\u{feff}')
+        })
+}
+
 struct Writer {
     output: String,
     depth: usize,
@@ -24,6 +33,9 @@ impl Writer {
     }
     fn space(&mut self) {
         self.output.push(' ');
+    }
+    fn separator(&mut self) {
+        self.output.push(if self.depth == 0 { '\n' } else { ' ' });
     }
     fn marker(&mut self, text: &str, depth: usize) -> Result<()> {
         if self.depth + depth > MAX_DEPTH {
@@ -49,13 +61,20 @@ impl Writer {
         }
         self.output.push('"');
     }
+    fn atom(&mut self, text: &str) {
+        if bare_atom(text) {
+            self.output.push_str(text);
+        } else {
+            self.quoted(text);
+        }
+    }
     fn name(&mut self, name: &str) -> Result<()> {
         if name.is_empty() {
             return Err(SerializeError::new(
                 "field and named branch names must not be empty",
             ));
         }
-        self.quoted(name);
+        self.atom(name);
         Ok(())
     }
     fn fields(&mut self, fields: &[Field]) -> Result<()> {
@@ -68,7 +87,7 @@ impl Writer {
                 )));
             }
             if i > 0 {
-                self.space();
+                self.separator();
             }
             self.field(field)?;
         }
@@ -107,14 +126,14 @@ impl Writer {
     }
     fn body(&mut self, value: &Value) -> Result<()> {
         match value {
-            Value::String(s) => self.quoted(s),
+            Value::String(s) => self.atom(s),
             Value::Bool(b) => self.output.push_str(if *b { "+true" } else { "+false" }),
             Value::Number(n) => self.output.push_str(n.as_str()),
             Value::Mesg(fields) => self.fields(fields.as_slice())?,
             Value::Dict(fields) => {
                 self.marker("()", 1)?;
                 if !fields.is_empty() {
-                    self.space();
+                    self.separator();
                     self.fields(fields.as_slice())?;
                 }
             }
@@ -123,7 +142,7 @@ impl Writer {
                 let mut kind = None;
                 for value in values {
                     same_kind(&mut kind, value)?;
-                    self.space();
+                    self.separator();
                     self.anonymous(value)?;
                 }
             }
@@ -173,7 +192,7 @@ impl Writer {
     fn many_items(&mut self, entries: &[ManyofEntry]) -> Result<()> {
         let mut kind = None;
         for entry in entries {
-            self.space();
+            self.separator();
             match entry {
                 ManyofEntry::Named(field) => self.field(field)?,
                 ManyofEntry::Anonymous(value) => {
@@ -186,9 +205,9 @@ impl Writer {
     }
     fn nest_items(&mut self, items: &[NestItem]) -> Result<()> {
         for item in items {
-            self.space();
+            self.separator();
             match item {
-                NestItem::Leaf(s) => self.quoted(s),
+                NestItem::Leaf(s) => self.atom(s),
                 NestItem::Branch { name, children } => {
                     self.open()?;
                     match name {
@@ -223,8 +242,10 @@ fn same_kind(kind: &mut Option<ElementKind>, value: &Value) -> Result<()> {
 
 /// Serialize a precise SxPB document, rejecting trees with no faithful spelling.
 ///
-/// Output is deterministic and compact, with quoted names/strings. It preserves
-/// data and numeric spellings, not comments or source layout. Caller-built
+/// Output is deterministic: document-level items occupy separate lines,
+/// nested bodies stay compact, and names/strings use bare atoms only when
+/// unambiguous. There is no terminal newline. This preserves data and numeric
+/// spellings, not comments or source layout. Caller-built
 /// lists must already be homogeneous; serialization never coerces their values.
 /// Scalars and loneofs cannot be document roots. A root manyof must begin with
 /// a named entry. Syntactic and composed-value depth are both limited by
