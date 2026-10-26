@@ -1,0 +1,18 @@
+[package]
+name = "sxpb"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A schema-agnostic SxPB parser and serializer"
+license = "0BSD"
+publish = false
+# Integration tests live in test/ and are registered with explicit [[test]] targets.
+autotests = false
+
+[lib]
+path = "src/lib.rs"
+
+[[test]]
+name = "library"
+path = "test/library.rs"
+
