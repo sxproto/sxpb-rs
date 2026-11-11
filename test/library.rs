@@ -92,6 +92,43 @@ fn unambiguous_string_atoms_and_names_print_bare() {
 }
 
 #[test]
+fn string_whitespace_survives_scalar_and_array_serialization() {
+    for text in [
+        "a\n",
+        "input_data\n",
+        "a b\n",
+        "a\n\n",
+        "a\r\n",
+        "a\rb",
+        "a\tb",
+        "a\u{b}b",
+        "a\u{c}b",
+        "a ",
+        "a  ",
+        " a",
+        " a ",
+        "a  b",
+        "a   b ",
+        "a b",
+        "plain",
+        "",
+        " ",
+        "  ",
+    ] {
+        let value: Value = Mesg::from(vec![
+            Field::new("single", text),
+            Field::new(
+                "array",
+                Value::List(vec![Value::from(text), Value::from(text)].into()),
+            ),
+        ])
+        .into();
+        let printed = to_string(&value).unwrap();
+        assert_eq!(roundtrip(&printed), value, "string {text:?}");
+    }
+}
+
+#[test]
 fn ambiguous_or_delimited_string_atoms_and_names_remain_quoted() {
     for text in [
         "",
