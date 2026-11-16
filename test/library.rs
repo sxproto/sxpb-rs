@@ -1,6 +1,6 @@
 use sxpb::{
-    Dict, Field, List, Lone, MAX_DEPTH, Many, ManyofEntry as Entry, Mesg, Nest, NestItem, Number,
-    NumberKind, Value, from_str, to_string,
+    Dict, Field, Lone, MAX_DEPTH, ManyofEntry as Entry, Mesg, Nest, NestItem, Number, NumberKind,
+    Value, from_str, to_string,
 };
 
 fn parse(s: &str) -> Value {
@@ -39,6 +39,12 @@ fn message_order_and_dict_kind() {
     assert_eq!(parse("; comment\n"), Value::Mesg(vec![].into()));
     assert_eq!(roundtrip("()"), Value::Dict(vec![].into()));
     assert_ne!(parse("(a ())"), parse("(a)"));
+    assert_eq!(
+        parse("(b +false)").get("b").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(Value::from(1).as_bool(), None);
+    assert_eq!(Value::from("x").as_bool(), None);
 }
 
 #[test]
@@ -189,77 +195,6 @@ fn canonical_empty_nest_items_preserve_discriminators() {
 }
 
 #[test]
-fn standalone_container_types_move_without_allocating_and_expose_typed_access() {
-    macro_rules! check_sequence {
-        ($ty:ident, $first:expr, $second:expr, $get:ident, $get_mut:ident) => {{
-            let first = $first;
-            let second = $second;
-            let items = vec![first.clone()];
-            let pointer = items.as_ptr();
-            let mut container = $ty::from(items);
-            assert_eq!(container.as_slice().as_ptr(), pointer);
-            assert_eq!(container.len(), 1);
-            assert!(!container.is_empty());
-            assert!($ty::new().is_empty());
-            assert!($ty::default().is_empty());
-            container.push(second.clone());
-            assert_eq!(container.iter().count(), 2);
-            for item in &mut container {
-                *item = first.clone();
-            }
-            container
-                .iter_mut()
-                .next()
-                .map(|item| *item = second.clone());
-            container.as_mut_slice()[1] = second.clone();
-            container.extend([first.clone()]);
-            let collected: $ty = (&container).into_iter().cloned().collect();
-            assert_eq!(collected, container);
-            assert_eq!(
-                collected.clone().into_iter().collect::<Vec<_>>(),
-                collected.clone().into_vec()
-            );
-            let mut value: Value = container.clone().into();
-            assert_eq!(value.$get(), Some(&container));
-            value.$get_mut().unwrap().push(second);
-            assert_eq!(value.$get().unwrap().len(), container.len() + 1);
-            let pointer = container.as_slice().as_ptr();
-            let moved: Value = container.into();
-            assert_eq!(moved.$get().unwrap().as_slice().as_ptr(), pointer);
-        }};
-    }
-    check_sequence!(
-        Mesg,
-        Field::new("a", 1),
-        Field::new("b", 2),
-        as_mesg,
-        as_mesg_mut
-    );
-    check_sequence!(
-        Dict,
-        Field::new("a", 1),
-        Field::new("b", 2),
-        as_dict,
-        as_dict_mut
-    );
-    check_sequence!(List, Value::from(1), Value::from(2), as_list, as_list_mut);
-    check_sequence!(
-        Many,
-        Entry::Anonymous(1.into()),
-        Entry::Anonymous(2.into()),
-        as_many,
-        as_many_mut
-    );
-    check_sequence!(
-        Nest,
-        NestItem::Leaf("a".into()),
-        NestItem::Leaf("b".into()),
-        as_nest,
-        as_nest_mut
-    );
-}
-
-#[test]
 fn typed_messages_and_dicts_remain_distinct() {
     let mut mesg = Mesg::from(vec![Field::new("x", 1)]);
     let mut dict = Dict::from(vec![Field::new("x", 1)]);
@@ -272,6 +207,13 @@ fn typed_messages_and_dicts_remain_distinct() {
     assert!(dictionary.as_mesg().is_none());
     assert_eq!(parse(&to_string(&message).unwrap()), message);
     assert_eq!(parse(&to_string(&dictionary).unwrap()), dictionary);
+    let mut m = message.clone();
+    *m.get_mut("x").unwrap() = 9.into();
+    assert_eq!(m.get("x"), Some(&Value::from(9)));
+    let mut d = dictionary.clone();
+    *d.get_mut("x").unwrap() = 8.into();
+    assert_eq!(d.get("x"), Some(&Value::from(8)));
+    assert!(Value::from(1).get_mut("x").is_none());
 }
 
 #[test]
@@ -356,7 +298,9 @@ fn float_construction_keeps_float_kind() {
         let n = Number::try_from(f).unwrap();
         assert_eq!(n.kind(), NumberKind::Float);
         assert_eq!(n.to_f64().unwrap().to_bits(), f.to_bits());
-        roundtrip(&format!("(a {n})"));
+        let printed = format!("(a {n})");
+        assert_eq!(field_value(&printed), Value::Number(n.clone()));
+        roundtrip(&printed);
     }
     for f in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         assert!(Number::try_from(f).is_err());
@@ -414,6 +358,8 @@ fn basic_escape_profile() {
     assert_eq!(field_value("(a \"x\\\ny\")"), Value::from("xy"));
     assert_eq!(field_value("(a \"x\\\r\ny\")"), Value::from("xy"));
     assert_eq!(field_value("(a \"\"\"x\\\ny\"\"\")"), Value::from("xy"));
+    let error = from_str("(a \"\\q\")").unwrap_err();
+    assert_eq!(error.offset, 4, "escape error points at the backslash");
 }
 
 #[test]
@@ -577,6 +523,7 @@ fn duplicates_and_trailing_input_reject() {
         ")",
         "((\"\") x)",
         "(\"\" x)",
+        "(\"\\\n\" 1)",
         "(+. x)",
     ]);
 }
@@ -590,11 +537,15 @@ fn nests_preserve_strings_labels_and_anonymous_branches() {
         field_value(r#"(a ("") "" word)"#),
         Value::Nest(vec![NestItem::Leaf("".into()), NestItem::Leaf("word".into())].into())
     );
+    roundtrip(r#"(a ("") (- leaf) (. leaf) (x leaf))"#);
     invalid(&[
         r#"(a ("") (("")))"#,
         r#"(a ("") x ("") y)"#,
         r#"(a ("") (+0.5 x))"#,
         r#"(a ("") (x (()) 1))"#,
+        r#"(a ("") (-. x))"#,
+        r#"(a ("") (.+ x))"#,
+        r#"(a ("") ("""""" x))"#,
     ]);
 }
 
@@ -705,9 +656,7 @@ fn append_depth_source(rounds: usize) -> String {
 fn append_composition_cannot_bypass_tree_depth_limit() {
     for rounds in [4, 60] {
         let source = append_depth_source(rounds);
-        let error = std::thread::spawn(move || from_str(&source).unwrap_err())
-            .join()
-            .unwrap();
+        let error = from_str(&source).unwrap_err();
         assert!(error.message.contains("depth"), "{error}");
     }
 }

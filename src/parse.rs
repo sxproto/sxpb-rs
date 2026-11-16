@@ -330,7 +330,7 @@ impl<'a> Parser<'a> {
                 Ok(Value::Nest(self.nest()?))
             }
             Kind::Empty | Kind::Quoted(_) | Kind::Multi(_) => {
-                Ok(Value::String(self.string_body(true)?))
+                Ok(Value::String(self.string_body()?))
             }
             Kind::Atom(s) => {
                 if *s == "+true" || *s == "+false" {
@@ -343,17 +343,17 @@ impl<'a> Parser<'a> {
                     return Ok(Value::Number(n));
                 }
                 if bare(s) {
-                    return Ok(Value::String(self.string_body(false)?));
+                    return Ok(Value::String(self.string_body()?));
                 }
                 Err(self.err("reserved prefix is not a string starter"))
             }
             _ => Err(self.err("expected a field value")),
         }
     }
-    fn string_body(&mut self, discriminated: bool) -> Result<String, ParseError> {
+    fn string_body(&mut self) -> Result<String, ParseError> {
         let mut result = String::new();
         let mut unquoted = false;
-        let mut count = 0;
+        let mut any = false;
         while !self.stopped() {
             match self.peek() {
                 Kind::Quoted(s) | Kind::Multi(s) => {
@@ -365,7 +365,7 @@ impl<'a> Parser<'a> {
                     self.next();
                     unquoted = false;
                 }
-                Kind::Atom(s) if count > 0 || discriminated || bare(s) => {
+                Kind::Atom(s) => {
                     if unquoted {
                         result.push(' ');
                     }
@@ -375,9 +375,9 @@ impl<'a> Parser<'a> {
                 }
                 _ => break,
             }
-            count += 1;
+            any = true;
         }
-        if count == 0 {
+        if !any {
             return Err(self.err("expected string content"));
         }
         Ok(result)
@@ -474,7 +474,7 @@ impl<'a> Parser<'a> {
                     Kind::Empty => {
                         self.next();
                         // Unlike a bare empty-string item, the parenthesized form needs content.
-                        Value::String(self.string_body(true)?)
+                        Value::String(self.string_body()?)
                     }
                     _ => {
                         let field = self.field_content()?;
@@ -623,7 +623,7 @@ impl<'a> Parser<'a> {
                             children,
                         });
                     }
-                    let text = self.string_body(true)?;
+                    let text = self.string_body()?;
                     self.expect(Kind::Close)?;
                     return Ok(NestItem::Leaf(text));
                 }
@@ -648,7 +648,7 @@ impl<'a> Parser<'a> {
                     vec![NestItem::Leaf(if self.peek() == &Kind::Close {
                         String::new()
                     } else {
-                        self.string_body(true)?
+                        self.string_body()?
                     })]
                     .into()
                 } else {
